@@ -1,6 +1,6 @@
 {
   "name": "pingpigeon",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Email, push and text yourself from the terminal: pipe a build log, a cron result or a report to your inbox or phone. The command-line client for pingpigeon.app.",
   "author": "John Murphy (https://github.com/chiefsmurph)",
   "repository": {

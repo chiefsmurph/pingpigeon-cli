@@ -56,7 +56,9 @@ pingpigeon push [message]       push notification (no message: reads stdin)
      -t, --title <text>  -p, --priority <1-5>
 pingpigeon text [message]       text your verified phone
 pingpigeon phone <number>       verify your phone for texts
+pingpigeon connect              use it in ChatGPT or Claude: your personal link + setup steps
 pingpigeon status               plan, this month's usage, your push topic
+pingpigeon token                print your token (for PINGPIGEON_TOKEN in scripts and CI)
 pingpigeon upgrade              open checkout for Pro
 pingpigeon logout               forget the sign-in on this machine
 ```
@@ -91,8 +93,15 @@ pingpigeon email --pdf -s "weekly numbers" < report.md
 `pingpigeon upgrade` opens checkout; `pingpigeon status` shows what you've used. Pricing is on
 [pingpigeon.app](https://pingpigeon.app).
 
-PingPigeon also works inside ChatGPT and Claude ("email me this as a PDF"); set that up on
-[pingpigeon.app](https://pingpigeon.app).
+## Use it in ChatGPT or Claude
+
+```sh
+pingpigeon connect
+```
+
+prints your personal connector link (and copies it), with the steps to add it in Claude (Settings → Connectors
+→ Add custom connector; the free plan works) or ChatGPT (Plugins → New Plugin; paid plans). Then, in any chat,
+say "email me this as a PDF". The link is tied to your account, so keep it to yourself.
 
 ## License
 

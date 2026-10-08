@@ -64,7 +64,7 @@ beforeEach(() => {
   emailLimit = false;
 });
 
-function harness(opts: { answers?: string[]; stdin?: string | null; signedIn?: boolean } = {}) {
+function harness(opts: { answers?: string[]; stdin?: string | null; signedIn?: boolean; interactive?: boolean; clipboard?: boolean } = {}) {
   const home = mkdtempSync(join(tmpdir(), "pp-"));
   if (opts.signedIn) {
     mkdirSync(join(home, ".pingpigeon"));
@@ -73,6 +73,8 @@ function harness(opts: { answers?: string[]; stdin?: string | null; signedIn?: b
   const answers = [...(opts.answers ?? [])];
   const out: string[] = [];
   const opened: string[] = [];
+  const warned: string[] = [];
+  const copied: string[] = [];
   const io: IO = {
     ask: async (q) => {
       const a = answers.shift();
@@ -80,12 +82,19 @@ function harness(opts: { answers?: string[]; stdin?: string | null; signedIn?: b
       return a;
     },
     say: (l) => void out.push(l),
+    warn: (l) => void warned.push(l),
     stdin: async () => opts.stdin ?? null,
     open: (u) => void opened.push(u),
+    copy: (t) => {
+      if (opts.clipboard === false) return false;
+      copied.push(t);
+      return true;
+    },
+    interactive: opts.interactive ?? false,
     env: { PINGPIGEON_URL: url },
     home,
   };
-  return { io, out, opened, home, text: () => out.join("\n") };
+  return { io, out, opened, warned, copied, home, text: () => out.join("\n") };
 }
 
 const sent = (path: string) => hits.find((h) => h.path === path)!;
@@ -98,6 +107,44 @@ test("login: code by email, saved privately, labelled pingpigeon-cli, same file 
   assert.match(hits.at(-1)!.ua ?? "", /^pingpigeon-cli\//);
   assert.equal(statSync(loginPath(h.home)).mode & 0o777, 0o600);
   assert.deepEqual(JSON.parse(readFileSync(loginPath(h.home), "utf8")), { url, token: "pp_new", email: "me@example.com", topic: "pp-t", phoneVerified: false });
+  assert.match(h.text(), /What you can do now/);
+  assert.match(h.text(), /ChatGPT or Claude .*pingpigeon connect/);
+  assert.ok(!h.text().includes("pp_new"), "login never prints the token");
+});
+
+test("connect: the personal link (same as the website), copied, with Claude + ChatGPT steps", async () => {
+  const h = harness({ signedIn: true });
+  assert.equal(await run(["connect"], h.io), 0);
+  assert.match(h.text(), new RegExp(`^  ${url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/mcp\\?token=pp_old$`, "m"));
+  assert.deepEqual(h.copied, [`${url}/mcp?token=pp_old`]);
+  assert.match(h.text(), /Copied to your clipboard\. It works like a password/);
+  assert.match(h.text(), /Settings → Connectors → Add custom connector/);
+  assert.match(h.text(), /Authentication: change from OAuth to No auth/);
+  assert.match(h.text(), /email me this as a PDF/);
+  assert.deepEqual(h.opened, [], "nothing opens without a person at the keyboard");
+});
+
+test("connect: no clipboard is fine; at a terminal it offers to open the setup page", async () => {
+  const quiet = harness({ signedIn: true, clipboard: false });
+  await run(["connect"], quiet.io);
+  assert.match(quiet.text(), /^It works like a password/m);
+  const c = harness({ signedIn: true, interactive: true, answers: ["c"] });
+  await run(["connect"], c.io);
+  assert.deepEqual(c.opened, ["https://claude.ai/settings/connectors"]);
+  const g = harness({ signedIn: true, interactive: true, answers: ["G"] });
+  await run(["connect"], g.io);
+  assert.deepEqual(g.opened, ["https://chatgpt.com/plugins"]);
+  const n = harness({ signedIn: true, interactive: true, answers: [""] });
+  await run(["connect"], n.io);
+  assert.deepEqual(n.opened, []);
+});
+
+test("token: only the token on stdout (so $(pingpigeon token) works), the warning on stderr", async () => {
+  const h = harness({ signedIn: true });
+  assert.equal(await run(["token"], h.io), 0);
+  assert.deepEqual(h.out, ["pp_old"]);
+  assert.match(h.warned.join("\n"), /keep it secret.*PINGPIGEON_TOKEN/);
+  await assert.rejects(run(["token"], harness().io), (e) => failure(e).code === 2);
 });
 
 test("login: an existing working sign-in is reused; --token signs in without a code", async () => {
@@ -176,6 +223,7 @@ test("status: plan, usage, push topic, the Pro pitch on free", async () => {
   assert.match(h.text(), /This month: 3\/200 emails · 1\/10 PDFs · 0\/4 text segments/);
   assert.match(h.text(), /ntfy\.sh\/pp-t/);
   assert.match(h.text(), /pingpigeon upgrade/);
+  assert.match(h.text(), /ChatGPT \/ Claude: pingpigeon connect/);
   const none = harness();
   assert.equal(await run(["status"], none.io), 1);
   assert.match(none.text(), /Not signed in/);

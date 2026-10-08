@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename } from "node:path";
@@ -20,7 +20,9 @@ Usage:
        -t, --title <text>  -p, --priority <1-5>
   pingpigeon text [message]       text your verified phone (free: 4 short texts a month)
   pingpigeon phone <number>       verify your phone for texts, e.g. +15551234567
+  pingpigeon connect              use it in ChatGPT or Claude: your personal link + setup steps
   pingpigeon status               who you're signed in as, your plan and this month's usage
+  pingpigeon token                print your token (for PINGPIGEON_TOKEN in scripts and CI)
   pingpigeon upgrade              open checkout for Pro
   pingpigeon logout               forget the sign-in on this machine
 
@@ -39,7 +41,13 @@ export interface IO {
   say: (line: string) => void;
   /** All of stdin, or null when stdin is a terminal (nothing piped in). */
   stdin: () => Promise<string | null>;
+  /** Messages that aren't the command's output (stderr), so `$(pingpigeon token)` stays clean. */
+  warn: (line: string) => void;
   open: (url: string) => void;
+  /** Put text on the clipboard; false when there's no clipboard tool. */
+  copy: (text: string) => boolean;
+  /** A person is at the keyboard (stdin and stdout are terminals), so it's fine to ask optional questions. */
+  interactive: boolean;
   env: NodeJS.ProcessEnv;
   home: string;
 }
@@ -129,6 +137,7 @@ async function login(a: Args, io: IO): Promise<number> {
     const me = await api.me(l);
     Object.assign(l, { email: me.subscriber?.email, topic: me.subscriber?.ntfy_topic ?? null, phoneVerified: !!me.subscriber?.phone_verified });
     io.say(`Signed in as ${l.email} (${me.subscriber?.plan ?? "free"} plan). Saved to ${await saveLogin(l, io.home)}.`);
+    guide(io);
     return 0;
   }
   const wanted = a.words[0];
@@ -136,6 +145,7 @@ async function login(a: Args, io: IO): Promise<number> {
   const me = existing ? await api.me({ ...existing, url: io.env.PINGPIGEON_URL || existing.url }).catch(() => null) : null;
   if (me && (!wanted || wanted.toLowerCase() === String(me.subscriber?.email).toLowerCase())) {
     io.say(`Already signed in as ${me.subscriber?.email} (${me.subscriber?.plan ?? "free"} plan). To switch: pingpigeon login other@example.com`);
+    io.say(`Use it in ChatGPT or Claude:  pingpigeon connect`);
     return 0;
   }
   const email = wanted || (await io.ask("Your email address: "));
@@ -153,13 +163,64 @@ async function login(a: Args, io: IO): Promise<number> {
       const v = await api.verify(url, email, code);
       const l: Login = { url, token: v.token, email: v.subscriber?.email ?? email, topic: v.subscriber?.ntfy_topic ?? null, phoneVerified: !!v.subscriber?.phone_verified };
       io.say(`Signed in as ${l.email}. Saved to ${await saveLogin(l, io.home)}.`);
-      io.say(`Try it:  pingpigeon email "hello from my terminal"`);
+      guide(io);
       return 0;
     } catch (e) {
       if (tries <= 1 || !/invalid/i.test((e as Error).message)) throw e;
       io.say(`${(e as Error).message}. Try again.`);
     }
   }
+}
+
+/** What to do next, shown once you're signed in. */
+function guide(io: IO): void {
+  io.say("");
+  io.say("What you can do now:");
+  io.say(`  pingpigeon email "hello from my terminal"              email yourself`);
+  io.say(`  make test 2>&1 | pingpigeon email -s "tests done"      pipe any output in`);
+  io.say(`  pingpigeon push "backup done"                          a push to your phone (pingpigeon status)`);
+  io.say(`  pingpigeon text "prod is down"                         a text (verify first: pingpigeon phone)`);
+  io.say("");
+  io.say(`Use it in ChatGPT or Claude ("email me this as a PDF"):  pingpigeon connect`);
+}
+
+/** The personal connector link: the service's MCP endpoint with the token in it, exactly what pingpigeon.app shows. */
+export const connectorUrl = (l: Login) => `${l.url.replace(/\/+$/, "")}/mcp?token=${encodeURIComponent(l.token)}`;
+
+async function connect(io: IO): Promise<number> {
+  const l = await signedIn(io);
+  const link = connectorUrl(l);
+  io.say("Your personal connector link for ChatGPT and Claude:");
+  io.say("");
+  io.say(`  ${link}`);
+  io.say("");
+  io.say(`${io.copy(link) ? "Copied to your clipboard. " : ""}It works like a password for your account: keep it to yourself.`);
+  io.say("");
+  io.say("Claude (the free plan works):");
+  io.say("  Settings → Connectors → Add custom connector → paste the link.  https://claude.ai/settings/connectors");
+  io.say("");
+  io.say("ChatGPT (needs a paid plan):  open Plugins in the left sidebar  https://chatgpt.com/plugins");
+  io.say("  1. Click + (New Plugin).");
+  io.say("  2. Name: PingPigeon.");
+  io.say("  3. Connection: choose Server URL, then paste the link.");
+  io.say("  4. Authentication: change from OAuth to No auth.");
+  io.say("  5. Tick \"I understand and want to continue\".");
+  io.say("  6. Click Create.");
+  io.say("");
+  io.say(`Then, in any chat, just say "email me this as a PDF".`);
+  if (io.interactive) {
+    const pick = (await io.ask("\nOpen the setup page now? [c] Claude  [g] ChatGPT  [Enter] no: ")).toLowerCase();
+    if (pick.startsWith("c")) io.open("https://claude.ai/settings/connectors");
+    else if (pick.startsWith("g")) io.open("https://chatgpt.com/plugins");
+  }
+  return 0;
+}
+
+async function token(io: IO): Promise<number> {
+  const l = await signedIn(io);
+  io.say(l.token);
+  io.warn("That's your PingPigeon token: keep it secret. In CI or a script, set it as PINGPIGEON_TOKEN.");
+  return 0;
 }
 
 async function attachment(path: string): Promise<Attachment> {
@@ -227,6 +288,7 @@ async function status(io: IO): Promise<number> {
   io.say(`This month: ${usage(me)}`);
   io.say(s.phone_verified ? "Phone: verified" : "Phone: not verified (for texts):  pingpigeon phone +15551234567");
   if (me.push?.url) io.say(`Push: subscribe to ${me.push.url} in the ntfy app (iOS, Android) to get pushes`);
+  io.say("ChatGPT / Claude: pingpigeon connect");
   if (!pro) io.say("Pro: 10,000 emails, unlimited PDFs and 300 text segments a month:  pingpigeon upgrade");
   return 0;
 }
@@ -260,6 +322,8 @@ export async function run(argv: string[], io: IO): Promise<number> {
     case "text": return text(a, io);
     case "phone": return phone(a, io);
     case "status": case "whoami": return status(io);
+    case "connect": return connect(io);
+    case "token": return token(io);
     case "upgrade": return upgrade(io);
     case "logout": return logout(io);
     default: throw new UsageError(`unknown command "${a.cmd}" (pingpigeon --help)`);
@@ -285,6 +349,7 @@ export function terminal(): IO & { close: () => void } {
       return (await rl.question(q)).trim();
     },
     say: (l) => console.log(l),
+    warn: (l) => console.error(l),
     stdin: async () => {
       if (process.stdin.isTTY) return null;
       const chunks: Buffer[] = [];
@@ -299,6 +364,18 @@ export function terminal(): IO & { close: () => void } {
         /* the URL is printed anyway */
       }
     },
+    copy: (text) => {
+      const tools: [string, string[]][] =
+        process.platform === "darwin" ? [["pbcopy", []]] : [["wl-copy", []], ["xclip", ["-selection", "clipboard"]], ["xsel", ["--clipboard", "--input"]]];
+      return tools.some(([cmd, args]) => {
+        try {
+          return spawnSync(cmd, args, { input: text, stdio: ["pipe", "ignore", "ignore"], timeout: 3000 }).status === 0;
+        } catch {
+          return false;
+        }
+      });
+    },
+    interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
     env: process.env,
     home: homedir(),
     close: () => rl?.close(),
