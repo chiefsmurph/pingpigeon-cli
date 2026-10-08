@@ -19,7 +19,13 @@ so a leaked token can't be used to spam people.
 brew install chiefsmurph/tap/pingpigeon
 ```
 
-or, without Homebrew (macOS and Linux, arm64 and x86-64; one file, no Node.js needed):
+or with npm (Node.js 20+):
+
+```sh
+npm install -g pingpigeon        # or run it without installing: npx pingpigeon
+```
+
+or as a single file, no Node.js needed (macOS and Linux, arm64 and x86-64):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/chiefsmurph/pingpigeon-cli/main/install.sh | sh
