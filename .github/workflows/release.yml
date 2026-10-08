@@ -1,0 +1,95 @@
+name: Release
+
+# On a version tag (vX.Y.Z): build standalone binaries for macOS + Linux (arm64 + x64), smoke-test each on
+# its own OS/CPU, attach them to the GitHub release, and update the Homebrew formula in chiefsmurph/homebrew-tap.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # macOS host: cross-compiles every target, and can ad-hoc sign the macOS builds (Apple Silicon requires it).
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: npm ci
+      - run: npm test
+      - name: Tag matches package.json version
+        run: test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
+      - run: npm run compile
+      - name: Smoke test (macOS arm64, no Node on PATH)
+        run: env -i HOME="$(mktemp -d)" PATH=/usr/bin:/bin ./dist-bin/darwin-arm64/pingpigeon --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: |
+            dist-bin/*.tar.gz
+            dist-bin/checksums.txt
+
+  smoke-linux:
+    needs: build
+    strategy:
+      matrix:
+        include:
+          - { runner: ubuntu-latest, platform: linux-x64 }
+          - { runner: ubuntu-24.04-arm, platform: linux-arm64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+      - name: Run it (no Node on PATH, not signed in)
+        run: |
+          (sha256sum -c --ignore-missing checksums.txt)
+          tar -xzf pingpigeon-${{ matrix.platform }}.tar.gz
+          home=$(mktemp -d)
+          env -i HOME="$home" PATH=/usr/bin:/bin ./pingpigeon --version
+          env -i HOME="$home" PATH=/usr/bin:/bin ./pingpigeon --help | grep -q "pingpigeon login"
+          set +e
+          env -i HOME="$home" PATH=/usr/bin:/bin ./pingpigeon status > out.txt; code=$?
+          set -e
+          cat out.txt
+          test "$code" = 1 && grep -q "Not signed in" out.txt
+
+  publish:
+    needs: [build, smoke-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: dist-bin
+      - name: Attach binaries to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "pingpigeon ${GITHUB_REF_NAME#v}" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" dist-bin/*.tar.gz dist-bin/checksums.txt --clobber
+      - name: Update the Homebrew formula
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh && printf '%s\n' "$TAP_DEPLOY_KEY" > ~/.ssh/tap && chmod 600 ~/.ssh/tap
+          ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap -o IdentitiesOnly=yes"
+          git clone -q git@github.com:chiefsmurph/homebrew-tap.git tap
+          mkdir -p tap/Formula
+          node scripts/formula.mjs "$GITHUB_REF_NAME" > tap/Formula/pingpigeon.rb
+          cd tap
+          git config user.name "pingpigeon-cli release"
+          git config user.email "pingpigeon-cli-release@users.noreply.github.com"
+          git add Formula/pingpigeon.rb
+          git diff --cached --quiet && { echo "formula unchanged"; exit 0; }
+          git commit -q -m "pingpigeon ${GITHUB_REF_NAME#v}"
+          git push -q origin HEAD

@@ -1,0 +1,31 @@
+{
+  "name": "pingpigeon-cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Email, push and text yourself from the terminal: pipe a build log, a cron result or a report to your inbox or phone. The command-line client for pingpigeon.app.",
+  "author": "John Murphy (https://github.com/chiefsmurph)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chiefsmurph/pingpigeon-cli.git"
+  },
+  "homepage": "https://pingpigeon.app",
+  "type": "module",
+  "bin": {
+    "pingpigeon": "dist/src/main.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "gen": "node scripts/gen.mjs",
+    "build": "npm run gen && rm -rf dist && tsc -p . && chmod +x dist/src/main.js",
+    "typecheck": "npm run gen && tsc -p . --noEmit",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "compile": "npm run gen && node scripts/compile.mjs"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3"
+  }
+}
